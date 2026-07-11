@@ -1,3 +1,10 @@
+# Сначала необходимо поставить streamlit на пайтон
+(В терминале powershell)
+```
+pip install streamlit
+```
+
+
 # Команды для скачивания моделей в powershell
 
 
@@ -50,6 +57,13 @@ ollama pull qwen3:8b
 ```
 streamlit run universal_chat_py
 ```
+
+# First you need to put StreamLite on Python
+(In the powershell terminal)
+```
+pip install streamlit
+```
+
 
 # Commands for downloading models in powershell
 

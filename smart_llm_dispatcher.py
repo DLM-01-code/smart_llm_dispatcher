@@ -284,6 +284,40 @@ class SmartDispatcher:
             "suggested_prompt": query
         }
 
+    # ===== НОВОЕ: детектор "похоже на код" и автообёртка =====
+    def _looks_like_code_line(self, line):
+        code_patterns = [
+            r'^\s*(def|class|import|from|for|while|if|elif|else:|try:|except|with)\s',
+            r'^\s*[\w\.\[\]]+\s*=\s*.+',
+            r'^\s*print\(',
+            r'^\s*return\b',
+            r'^\s*[\{\}\(\)\[\];]',
+            r';\s*$',
+        ]
+        return any(re.search(p, line) for p in code_patterns)
+
+    def ensure_code_formatting(self, text, force_language=None):
+        """
+        Подстраховка: если модель ИГНОРИРУЕТ инструкцию и не оборачивает код
+        в markdown-блок ```, мы находим такие фрагменты и оборачиваем сами.
+        Если код уже в блоках ``` — ничего не трогаем.
+        """
+        if "```" in text:
+            return text
+
+        lines = text.split("\n")
+        code_like = sum(1 for l in lines if self._looks_like_code_line(l))
+        if len(lines) == 0:
+            return text
+
+        ratio = code_like / len(lines)
+        # Если весь ответ явно похож на код (>=30% строк) — оборачиваем целиком
+        if code_like >= 2 and ratio >= 0.3:
+            lang = force_language or "python"
+            return f"```{lang}\n{text.strip()}\n```"
+
+        return text
+
     def send_to_ollama(self, model, prompt, image_path=None, temperature=0.3):
         """Универсальная отправка запроса к Ollama с защитой от зацикливания"""
         
@@ -294,18 +328,17 @@ class SmartDispatcher:
             print(f"⚠️ Модель {model} не поддерживает изображения. Изображение игнорируется.")
             image_path = None
         
-        # ===== УСИЛЕННАЯ СИСТЕМНАЯ ИНСТРУКЦИЯ ДЛЯ КОДА =====
-        system_instruction = """
-Ты — ИИ-ассистент, который ОБЯЗАТЕЛЬНО соблюдает правила форматирования КОДА.
+        # ===== УСИЛЕННАЯ СИСТЕМНАЯ ИНСТРУКЦИЯ ДЛЯ КОДА (исправлено: примеры больше не склеены в один блок) =====
+        system_instruction = """Ты — ИИ-ассистент, который ОБЯЗАТЕЛЬНО соблюдает правила форматирования КОДА.
 
 === ЖЁСТКИЕ ПРАВИЛА ДЛЯ КОДА ===
 
-1. Если ты пишешь КОД на Python — ВСЕГДА используй markdown-блок ```python ... ```.
-2. ВНУТРИ блока код ДОЛЖЕН быть с ПРАВИЛЬНЫМИ ОТСТУПАМИ (4 пробела для каждого уровня вложенности).
-3. НЕ смешивай код с пояснениями внутри блока.
-4. Пояснения пиши СНАРУЖИ блока.
-5. Если пользователь просит "напиши код" или "функцию" — выдавай ТОЛЬКО код в markdown-блоке.
-6. Даже если ты не уверен — ВСЁ РАВНО оформляй код в markdown с отступами.
+1. Если ты пишешь код на ЛЮБОМ языке программирования — ВСЕГДА оборачивай его в markdown-блок вида ```язык ... ``` (например ```python ... ```).
+2. Внутри блока код ДОЛЖЕН иметь ПРАВИЛЬНЫЕ ОТСТУПЫ (4 пробела на уровень вложенности для Python).
+3. Никогда не пиши весь код одной строкой через точку с запятой или "if ... else" в одну строку без переносов.
+4. Пояснения пиши СНАРУЖИ блока кода (до и/или после), а не внутри него.
+5. Структура ответа: короткое пояснение (1-3 предложения) → блок кода → при необходимости краткий комментарий, как использовать.
+6. Даже если не до конца уверен в точном синтаксисе — всё равно оформляй как код в markdown-блоке с отступами, а не сплошным текстом.
 
 === ПРИМЕР ПРАВИЛЬНОГО ОТВЕТА ===
 
@@ -320,12 +353,13 @@ def proverka_vozrasta():
         print("Доступ запрещен")
 
 proverka_vozrasta()
-=== ПРИМЕР НЕПРАВИЛЬНОГО ОТВЕТА ===
+```
+
+=== ПРИМЕР НЕПРАВИЛЬНОГО ОТВЕТА (ТАК ДЕЛАТЬ НЕЛЬЗЯ) ===
 
 def proverka_vozrasta(): vozrast = int(input("Введите ваш возраст: ")) if vozrast >= 18: print("Доступ разрешен") else: print("Доступ запрещен")
 
-ТАК НЕЛЬЗЯ! Всегда делай отступы и markdown-блок.
-```
+Это неправильно, потому что нет markdown-блока и нет отступов.
 
 НАРУШЕНИЕ ЭТИХ ПРАВИЛ НЕДОПУСТИМО!
 """
@@ -364,7 +398,10 @@ def proverka_vozrasta(): vozrast = int(input("Введите ваш возрас
                 "top_p": 0.85,
                 "repeat_penalty": 1.2,
                 "num_predict": 2048,
-                "stop": ["\n\n\n", "---", "###", "=================="]
+                # ВАЖНО: "---" и "###" убраны из стоп-последовательностей,
+                # т.к. они часто встречаются ВНУТРИ нормального markdown-ответа
+                # (заголовки, разделители) и раньше могли обрывать код/ответ на середине.
+                "stop": ["\n\n\n\n"]
             }
         }
 
@@ -380,7 +417,9 @@ def proverka_vozrasta(): vozrast = int(input("Введите ваш возрас
             # ===== УВЕЛИЧЕННЫЙ ТАЙМАУТ ДО 600 СЕКУНД (10 МИНУТ) =====
             response = requests.post(self.ollama_url, json=data, timeout=600)
             if response.status_code == 200:
-                return response.json().get("response", "Пустой ответ")
+                raw_text = response.json().get("response", "Пустой ответ")
+                # Подстраховка: если модель всё равно не оформила код — оборачиваем сами
+                return self.ensure_code_formatting(raw_text)
             else:
                 error_msg = response.json().get("error", {}).get("message", response.text)
                 return f"❌ Ошибка HTTP {response.status_code}: {error_msg}"
@@ -427,13 +466,9 @@ def proverka_vozrasta(): vozrast = int(input("Введите ваш возрас
 {optimized_prompt}
 
 ВАЖНО:
-
 Прочитай текст на изображении максимально точно.
-
 НЕ ВЫДУМЫВАЙ то, чего нет на картинке.
-
 Если текст неразборчив — скажи об этом честно.
-
 Ответь КОРОТКО и по делу.
 """
         elif model_category == "coding":
@@ -441,25 +476,18 @@ def proverka_vozrasta(): vozrast = int(input("Введите ваш возрас
 {optimized_prompt}
 
 ВАЖНО:
-
 Покажи пример кода с пояснениями.
-
-Если код сложный — разбей на шаги.
-
+Код ОБЯЗАТЕЛЬНО оформляй в markdown-блоке ```язык ... ``` с правильными отступами.
+Если код сложный — разбей на шаги, каждый шаг со своим блоком кода.
 Не пиши длинные объяснения, только суть.
-
-Используй форматирование кода.
 """
         elif model_category == "reasoning":
             optimized_prompt = f"""
 {optimized_prompt}
 
 ВАЖНО:
-
 Объясни рассуждения пошагово, но КОРОТКО.
-
 Если не уверен — скажи "Я не уверен".
-
 Не придумывай факты.
 """
         else:
@@ -668,12 +696,8 @@ with chat_container:
                 )
                 model_badge = f'<span class="model-badge">{model_info["emoji"]} {msg["model"]}</span><br>'
 
-            st.markdown(f"""
-<div class="assistant-message">
-    {model_badge}
-    {msg["content"]}
-</div>
-""", unsafe_allow_html=True)
+            st.markdown(model_badge, unsafe_allow_html=True)
+            st.markdown(msg["content"])
 
 
 # ========================================
