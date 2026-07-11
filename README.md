@@ -55,7 +55,7 @@ ollama pull qwen3:8b
 # Открыть командой streamlit:
 
 ```
-streamlit run universal_chat_py
+streamlit run universal_chat.py
 ```
 
 # First you need to put StreamLite on Python
@@ -114,5 +114,5 @@ ollama pull qwen3:8b
 # Open with streamlit:
 
 ```
-streamlit run universal_chat_py
+streamlit run universal_chat.py
 ```
