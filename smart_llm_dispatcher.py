@@ -9,14 +9,16 @@ import time
 import re
 import subprocess
 
+# ========================================
 # КЛАСС УМНОГО ДИСПЕТЧЕРА
+# ========================================
 
 class SmartDispatcher:
     def __init__(self):
         self.ollama_url = "http://localhost:11434/api/generate"
         self.ollama_list_url = "http://localhost:11434/api/tags"
         
-        #РАСШИРЕННЫЕ КАТЕГОРИИ
+        # ===== РАСШИРЕННЫЕ КАТЕГОРИИ =====
         self.model_categories = {
             "vision": {
                 "keywords": ["vl", "vision", "llava", "paligemma", "cogvlm", "florence"],
@@ -196,7 +198,7 @@ class SmartDispatcher:
         # Сортируем по размеру (от больших к маленьким)
         models_in_category.sort(key=lambda x: get_size_weight(x[0]), reverse=True)
         
-        #ВЫБОР МОДЕЛИ ПО СЛОЖНОСТИ
+        # === ВЫБОР МОДЕЛИ ПО СЛОЖНОСТИ ===
         if complexity >= 0.7:
             # Сложная задача → самая большая модель
             selected = models_in_category[0][0]
@@ -228,7 +230,7 @@ class SmartDispatcher:
                 "llama3.1:latest": {"category": "general", "emoji": "💬", "description": "Общий"}
             }
         
-        #ШАГ 1: ОПРЕДЕЛЯЕМ КАТЕГОРИЮ
+        # === ШАГ 1: ОПРЕДЕЛЯЕМ КАТЕГОРИЮ ===
         category_prompt = f"""
 Определи категорию запроса пользователя.
 
@@ -257,7 +259,7 @@ class SmartDispatcher:
         if has_image:
             category = "vision"
         
-        #ШАГ 2: ВЫБИРАЕМ МОДЕЛЬ ПО СЛОЖНОСТИ
+        # === ШАГ 2: ВЫБИРАЕМ МОДЕЛЬ ПО СЛОЖНОСТИ ===
         selected_model, complexity = self.select_model_by_complexity(query, category, has_image)
         
         if selected_model:
@@ -292,15 +294,51 @@ class SmartDispatcher:
             print(f"⚠️ Модель {model} не поддерживает изображения. Изображение игнорируется.")
             image_path = None
         
-        # Сборка полного промпта с историей
-        full_prompt = prompt
-        
+        # ===== УСИЛЕННАЯ СИСТЕМНАЯ ИНСТРУКЦИЯ ДЛЯ КОДА =====
+        system_instruction = """
+Ты — ИИ-ассистент, который ОБЯЗАТЕЛЬНО соблюдает правила форматирования КОДА.
+
+=== ЖЁСТКИЕ ПРАВИЛА ДЛЯ КОДА ===
+
+1. Если ты пишешь КОД на Python — ВСЕГДА используй markdown-блок ```python ... ```.
+2. ВНУТРИ блока код ДОЛЖЕН быть с ПРАВИЛЬНЫМИ ОТСТУПАМИ (4 пробела для каждого уровня вложенности).
+3. НЕ смешивай код с пояснениями внутри блока.
+4. Пояснения пиши СНАРУЖИ блока.
+5. Если пользователь просит "напиши код" или "функцию" — выдавай ТОЛЬКО код в markdown-блоке.
+6. Даже если ты не уверен — ВСЁ РАВНО оформляй код в markdown с отступами.
+
+=== ПРИМЕР ПРАВИЛЬНОГО ОТВЕТА ===
+
+Вот функция для проверки возраста:
+
+```python
+def proverka_vozrasta():
+    vozrast = int(input("Введите ваш возраст: "))
+    if vozrast >= 18:
+        print("Доступ разрешен")
+    else:
+        print("Доступ запрещен")
+
+proverka_vozrasta()
+=== ПРИМЕР НЕПРАВИЛЬНОГО ОТВЕТА ===
+
+def proverka_vozrasta(): vozrast = int(input("Введите ваш возраст: ")) if vozrast >= 18: print("Доступ разрешен") else: print("Доступ запрещен")
+
+ТАК НЕЛЬЗЯ! Всегда делай отступы и markdown-блок.
+```
+
+НАРУШЕНИЕ ЭТИХ ПРАВИЛ НЕДОПУСТИМО!
+"""
+
+        # Сборка полного промпта с историей и системной инструкцией
         if self.conversation_history:
             history_text = "\n".join([
                 f"{'Пользователь' if m['role'] == 'user' else 'Ассистент'}: {m['content']}"
                 for m in self.conversation_history[-5:]
             ])
             full_prompt = f"""
+{system_instruction}
+
 ИСТОРИЯ ДИАЛОГА:
 {history_text}
 
@@ -309,7 +347,14 @@ class SmartDispatcher:
 
 ОТВЕТЬ НА ТЕКУЩИЙ ЗАПРОС, УЧИТЫВАЯ ИСТОРИЮ ДИАЛОГА.
 """
-        
+        else:
+            full_prompt = f"""
+{system_instruction}
+
+ТЕКУЩИЙ ЗАПРОС:
+{prompt}
+"""
+
         data = {
             "model": model,
             "prompt": full_prompt,
@@ -322,7 +367,7 @@ class SmartDispatcher:
                 "stop": ["\n\n\n", "---", "###", "=================="]
             }
         }
-        
+
         if image_path and os.path.exists(image_path):
             try:
                 with open(image_path, "rb") as f:
@@ -330,9 +375,9 @@ class SmartDispatcher:
                 data["images"] = [image_data]
             except Exception as e:
                 return f"❌ Ошибка загрузки изображения: {e}"
-        
+
         try:
-            #УВЕЛИЧЕННЫЙ ТАЙМАУТ ДО 600 СЕКУНД (10 МИНУТ)
+            # ===== УВЕЛИЧЕННЫЙ ТАЙМАУТ ДО 600 СЕКУНД (10 МИНУТ) =====
             response = requests.post(self.ollama_url, json=data, timeout=600)
             if response.status_code == 200:
                 return response.json().get("response", "Пустой ответ")
@@ -351,16 +396,16 @@ class SmartDispatcher:
     def process(self, query, image_path=None):
         """Полный цикл: DeepSeek анализирует → выбирает → генерирует"""
         start_time = time.time()
-        
+
         self.update_models()
-        
+
         has_image = image_path is not None and os.path.exists(image_path)
-        
+
         analysis = self.analyze_with_deepseek(query, has_image)
-        
+
         model_name = analysis.get("selected_model", "")
         model_info = self.available_models.get(model_name, {})
-        
+
         if not model_info:
             if self.available_models:
                 model_name = list(self.available_models.keys())[0]
@@ -368,43 +413,54 @@ class SmartDispatcher:
             else:
                 return {
                     "error": "Нет доступных моделей.",
-                    "response": "❌ Нет доступных моделей. Установите модель через `ollama run <имя_модели>`"
+                    "response": "❌ Нет доступных моделей. Установите модель через ollama run <имя_модели>"
                 }
-        
+
         model_emoji = model_info.get("emoji", "🤖")
         model_category = model_info.get("category", "general")
-        
+
         optimized_prompt = analysis.get("suggested_prompt", query)
-        
+
         # Дополнительные инструкции для разных категорий
         if model_category == "vision" and image_path:
             optimized_prompt = f"""
 {optimized_prompt}
 
 ВАЖНО:
-1. Прочитай текст на изображении максимально точно.
-2. НЕ ВЫДУМЫВАЙ то, чего нет на картинке.
-3. Если текст неразборчив — скажи об этом честно.
-4. Ответь КОРОТКО и по делу.
+
+Прочитай текст на изображении максимально точно.
+
+НЕ ВЫДУМЫВАЙ то, чего нет на картинке.
+
+Если текст неразборчив — скажи об этом честно.
+
+Ответь КОРОТКО и по делу.
 """
         elif model_category == "coding":
             optimized_prompt = f"""
 {optimized_prompt}
 
 ВАЖНО:
-1. Покажи пример кода с пояснениями.
-2. Если код сложный — разбей на шаги.
-3. Не пиши длинные объяснения, только суть.
-4. Используй форматирование кода.
+
+Покажи пример кода с пояснениями.
+
+Если код сложный — разбей на шаги.
+
+Не пиши длинные объяснения, только суть.
+
+Используй форматирование кода.
 """
         elif model_category == "reasoning":
             optimized_prompt = f"""
 {optimized_prompt}
 
 ВАЖНО:
-1. Объясни рассуждения пошагово, но КОРОТКО.
-2. Если не уверен — скажи "Я не уверен".
-3. Не придумывай факты.
+
+Объясни рассуждения пошагово, но КОРОТКО.
+
+Если не уверен — скажи "Я не уверен".
+
+Не придумывай факты.
 """
         else:
             optimized_prompt = f"""
@@ -413,17 +469,17 @@ class SmartDispatcher:
 ОТВЕТЬ КОРОТКО И ПО ДЕЛУ. МАКСИМУМ 5-7 ПРЕДЛОЖЕНИЙ.
 НЕ ПОВТОРЯЙ ОДНО И ТО ЖЕ.
 """
-        
+
         # Сохраняем запрос в историю
         self.conversation_history.append({"role": "user", "content": query})
-        
+
         response = self.send_to_ollama(model_name, optimized_prompt, image_path)
-        
+
         # Сохраняем ответ в историю
         self.conversation_history.append({"role": "assistant", "content": response})
-        
+
         elapsed_time = time.time() - start_time
-        
+
         return {
             "query": query,
             "selected_model": model_name,
@@ -435,7 +491,9 @@ class SmartDispatcher:
         }
 
 
+# ========================================
 # STREAMLIT ИНТЕРФЕЙС (ТЁМНАЯ ТЕМА)
+# ========================================
 
 st.set_page_config(
     page_title="🤖 Smart Chat",
@@ -446,114 +504,39 @@ st.set_page_config(
 # ===== ТЁМНАЯ ТЕМА =====
 st.markdown("""
 <style>
-    .stApp, body { background-color: #0f1117; color: #e4e4e7; }
-    .chat-header {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem 2rem;
-        border-radius: 15px;
-        color: white;
-        margin-bottom: 1.5rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-    }
-    .chat-header h1 { margin: 0; font-size: 1.8rem; color: white; }
-    .chat-header .status { font-size: 0.9rem; opacity: 0.9; color: white; }
-    
-    .user-message {
-        background: #2a2f3a;
-        color: #e4e4e7;
-        border-left: 4px solid #667eea;
-        padding: 1rem 1.5rem;
-        border-radius: 15px 15px 15px 5px;
-        margin: 0.5rem 0;
-        max-width: 80%;
-        float: right;
-        clear: both;
-    }
-    .assistant-message {
-        background: #1e2230;
-        color: #e4e4e7;
-        border-left: 4px solid #22c55e;
-        padding: 1rem 1.5rem;
-        border-radius: 15px 15px 5px 15px;
-        margin: 0.5rem 0;
-        max-width: 80%;
-        float: left;
-        clear: both;
-    }
-    .model-badge {
-        display: inline-block;
-        background: #667eea;
-        color: white;
-        padding: 0.2rem 0.8rem;
-        border-radius: 20px;
-        font-size: 0.7rem;
-        margin-bottom: 0.5rem;
-    }
-    
-    .stChatInput input {
-        background-color: #1a1d23 !important;
-        color: #e4e4e7 !important;
-        border: 1px solid #3a3f4a !important;
-        border-radius: 25px !important;
-        padding: 0.75rem 1.5rem !important;
-    }
-    .stChatInput input:focus {
-        border-color: #667eea !important;
-        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.3) !important;
-    }
-    
-    .stButton button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 25px !important;
-        font-weight: bold !important;
-        padding: 0.5rem 1.5rem !important;
-    }
-    .stButton button:hover { opacity: 0.9 !important; transform: scale(0.98) !important; }
-    
-    section[data-testid="stSidebar"] {
-        background-color: #1a1d23 !important;
-        color: #e4e4e7 !important;
-    }
-    section[data-testid="stSidebar"] * { color: #e4e4e7 !important; }
-    
-    .sidebar-info, .model-list {
-        background: #0f1117 !important;
-        color: #e4e4e7 !important;
-        border: 1px solid #2a2f3a !important;
-        padding: 0.75rem 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-    }
-    
-    h1, h2, h3, h4, h5, h6 { color: #e4e4e7 !important; }
-    p, li, span, div, label { color: #e4e4e7 !important; }
-    hr { border-color: #2a2f3a !important; }
-    
-    ::-webkit-scrollbar { width: 8px; background: #0f1117; }
-    ::-webkit-scrollbar-thumb { background: #3a3f4a; border-radius: 10px; }
-    
-    .footer {
-        text-align: center;
-        color: #6b7280 !important;
-        font-size: 0.8rem;
-        padding: 1rem 0;
-        margin-top: 2rem;
-        border-top: 1px solid #2a2f3a;
-    }
+.stApp, body { background-color: #0f1117; color: #e4e4e7; }
+.chat-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1rem 2rem; border-radius: 15px; color: white; margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
+.chat-header h1 { margin: 0; font-size: 1.8rem; color: white; }
+.chat-header .status { font-size: 0.9rem; opacity: 0.9; color: white; }
+.user-message { background: #2a2f3a; color: #e4e4e7; border-left: 4px solid #667eea; padding: 1rem 1.5rem; border-radius: 15px 15px 15px 5px; margin: 0.5rem 0; max-width: 80%; float: right; clear: both; }
+.assistant-message { background: #1e2230; color: #e4e4e7; border-left: 4px solid #22c55e; padding: 1rem 1.5rem; border-radius: 15px 15px 5px 15px; margin: 0.5rem 0; max-width: 80%; float: left; clear: both; }
+.model-badge { display: inline-block; background: #667eea; color: white; padding: 0.2rem 0.8rem; border-radius: 20px; font-size: 0.7rem; margin-bottom: 0.5rem; }
+.stChatInput input { background-color: #1a1d23 !important; color: #e4e4e7 !important; border: 1px solid #3a3f4a !important; border-radius: 25px !important; padding: 0.75rem 1.5rem !important; }
+.stChatInput input:focus { border-color: #667eea !important; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.3) !important; }
+.stButton button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important; color: white !important; border: none !important; border-radius: 25px !important; font-weight: bold !important; padding: 0.5rem 1.5rem !important; }
+.stButton button:hover { opacity: 0.9 !important; transform: scale(0.98) !important; }
+section[data-testid="stSidebar"] { background-color: #1a1d23 !important; color: #e4e4e7 !important; }
+section[data-testid="stSidebar"] * { color: #e4e4e7 !important; }
+.sidebar-info, .model-list { background: #0f1117 !important; color: #e4e4e7 !important; border: 1px solid #2a2f3a !important; padding: 0.75rem 1rem; border-radius: 10px; margin: 0.5rem 0; }
+h1, h2, h3, h4, h5, h6 { color: #e4e4e7 !important; }
+p, li, span, div, label { color: #e4e4e7 !important; }
+hr { border-color: #2a2f3a !important; }
+::-webkit-scrollbar { width: 8px; background: #0f1117; }
+::-webkit-scrollbar-thumb { background: #3a3f4a; border-radius: 10px; }
+.footer { text-align: center; color: #6b7280 !important; font-size: 0.8rem; padding: 1rem 0; margin-top: 2rem; border-top: 1px solid #2a2f3a; }
 </style>
 """, unsafe_allow_html=True)
 
+
+# ========================================
 # ИНИЦИАЛИЗАЦИЯ
+# ========================================
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "👋 Привет! Я умный диспетчер с **памятью**.\n\n📌 **DeepSeek-R1:7b** анализирует запрос, оценивает сложность и выбирает подходящую модель из ВСЕХ установленных!\n\nПросто напиши сообщение или загрузи фото — я сам выберу лучшую модель и запомню контекст диалога!",
+            "content": "👋 Привет! Я умный диспетчер с памятью.\n\n📌 DeepSeek-R1:7b анализирует запрос, оценивает сложность и выбирает подходящую модель из ВСЕХ установленных!\n\nПросто напиши сообщение или загрузи фото — я сам выберу лучшую модель и запомню контекст диалога!",
             "model": None
         }
     ]
@@ -567,7 +550,10 @@ if "processed" not in st.session_state:
 if "uploaded_file" not in st.session_state:
     st.session_state.uploaded_file = None
 
+
+# ========================================
 # ЗАГОЛОВОК
+# ========================================
 
 st.markdown("""
 <div class="chat-header">
@@ -579,35 +565,38 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+
+# ========================================
 # БОКОВАЯ ПАНЕЛЬ
+# ========================================
 
 with st.sidebar:
     st.markdown("### 🎯 Доступные модели")
-    
+
     models = st.session_state.dispatcher.update_models()
-    
+
     if models:
         for model_name, info in models.items():
             st.markdown(f"""
-            <div class="model-list">
-                {info['emoji']} <b>{model_name}</b><br>
-                <span style="font-size:0.8rem; color:#9ca3af;">{info['description']}</span>
-            </div>
-            """, unsafe_allow_html=True)
+<div class="model-list">
+    {info['emoji']} <b>{model_name}</b><br>
+    <span style="font-size:0.8rem; color:#9ca3af;">{info['description']}</span>
+</div>
+""", unsafe_allow_html=True)
     else:
         st.warning("⚠️ Модели не найдены.")
-    
+
     st.divider()
-    
+
     if st.button("🔄 Обновить список моделей"):
         st.session_state.dispatcher.update_models()
         st.rerun()
-    
+
     st.divider()
-    
+
     st.markdown("### 🧠 Память")
     st.info(f"Запомнено сообщений: {len(st.session_state.dispatcher.conversation_history)}")
-    
+
     if st.button("🗑️ Очистить историю и память"):
         st.session_state.dispatcher.clear_history()
         st.session_state.messages = [
@@ -618,25 +607,25 @@ with st.sidebar:
             }
         ]
         st.rerun()
-    
+
     st.divider()
-    
+
     st.markdown("### ⚙️ Как это работает")
     st.markdown("""
-    1. **DeepSeek-R1:7b** определяет категорию запроса
-    2. **DeepSeek-R1:7b** оценивает сложность (0–1)
-    3. Выбирается модель под сложность:
-       - Лёгкая → маленькая модель (быстро)
-       - Сложная → большая модель (качественно)
-    
-    🔹 Фото → 📸 Vision  
-    🔹 Код → 💻 Coder  
-    🔹 Вопросы → 🧠 Reasoning  
-    🔹 Общение → 💬 General
-    """)
-    
+1. DeepSeek-R1:7b определяет категорию запроса.
+2. DeepSeek-R1:7b оценивает сложность (0–1).
+3. Выбирается модель под сложность:
+   - Лёгкая → маленькая модель (быстро)
+   - Сложная → большая модель (качественно)
+
+🔹 Фото → 📸 Vision  
+🔹 Код → 💻 Coder  
+🔹 Вопросы → 🧠 Reasoning  
+🔹 Общение → 💬 General
+""")
+
     st.divider()
-    
+
     st.markdown("### 📸 Загрузить фото")
     uploaded_file = st.file_uploader(
         "Выберите изображение",
@@ -644,17 +633,20 @@ with st.sidebar:
         label_visibility="collapsed",
         key="image_uploader"
     )
-    
+
     if uploaded_file:
         st.session_state.uploaded_file = uploaded_file
         st.image(uploaded_file, caption="📸 Загружено", use_container_width=True)
-    
+
     st.divider()
     st.caption(f"🕐 {datetime.now().strftime('%H:%M:%S')}")
     if st.session_state.dispatcher.last_update:
         st.caption(f"📅 Обновлено: {st.session_state.dispatcher.last_update.strftime('%H:%M:%S')}")
 
+
+# ========================================
 # ОТОБРАЖЕНИЕ СООБЩЕНИЙ
+# ========================================
 
 chat_container = st.container()
 
@@ -662,11 +654,11 @@ with chat_container:
     for msg in st.session_state.messages:
         if msg["role"] == "user":
             st.markdown(f"""
-            <div class="user-message">
-                <b>👤 Вы</b><br>
-                {msg["content"]}
-            </div>
-            """, unsafe_allow_html=True)
+<div class="user-message">
+    <b>👤 Вы</b><br>
+    {msg["content"]}
+</div>
+""", unsafe_allow_html=True)
         else:
             model_badge = ""
             if msg.get("model"):
@@ -675,40 +667,46 @@ with chat_container:
                     {"emoji": "🤖", "description": "Модель"}
                 )
                 model_badge = f'<span class="model-badge">{model_info["emoji"]} {msg["model"]}</span><br>'
-            
-            st.markdown(f"""
-            <div class="assistant-message">
-                {model_badge}
-                {msg["content"]}
-            </div>
-            """, unsafe_allow_html=True)
 
+            st.markdown(f"""
+<div class="assistant-message">
+    {model_badge}
+    {msg["content"]}
+</div>
+""", unsafe_allow_html=True)
+
+
+# ========================================
 # ПОЛЕ ВВОДА
+# ========================================
 
 st.markdown("---")
 
 user_input = st.chat_input("Напишите сообщение...")
 
+
+# ========================================
 # ОБРАБОТКА ЗАПРОСА
+# ========================================
 
 if user_input and not st.session_state.processed:
     st.session_state.processed = True
-    
+
     image_path = None
     if st.session_state.uploaded_file:
         uploaded = st.session_state.uploaded_file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             tmp.write(uploaded.getbuffer())
             image_path = tmp.name
-    
+
     st.session_state.messages.append({
         "role": "user",
         "content": user_input
     })
-    
+
     with st.spinner("🧠 DeepSeek-R1:7b анализирует запрос, оценивает сложность и выбирает модель..."):
         result = st.session_state.dispatcher.process(user_input, image_path)
-    
+
     if "error" in result:
         st.session_state.messages.append({
             "role": "assistant",
@@ -721,22 +719,26 @@ if user_input and not st.session_state.processed:
             "content": result["response"],
             "model": result["selected_model"]
         })
-        
+
         st.toast(
-            f"{result['model_emoji']} Использована: {result['selected_model']} (сложность: {result.get('analysis_reason', 'N/A')})",
+            f"{result['model_emoji']} Использована: {result['selected_model']} "
+            f"(сложность: {result.get('analysis_reason', 'N/A')})",
             icon="✅"
         )
-    
+
     if image_path and os.path.exists(image_path):
         try:
             os.unlink(image_path)
         except:
             pass
-    
+
     st.session_state.processed = False
     st.rerun()
 
+
+# ========================================
 # ФУТЕР
+# ========================================
 
 st.markdown("""
 <div class="footer">
